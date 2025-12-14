@@ -6,6 +6,7 @@ torchvision
 numpy
 opencv-python-headless
 Pillow
+pillow-heif
 scikit-image
 scipy
 imutils
