@@ -17,3 +17,4 @@ libblas-dev
 libopenblas-dev
 tesseract-ocr-eng
 tesseract-ocr-ita
+tesseract-ocr-tur
