@@ -19,3 +19,4 @@ tesseract-ocr
 tesseract-ocr-eng
 tesseract-ocr-ita
 tesseract-ocr-tur
+libtesseract-dev
