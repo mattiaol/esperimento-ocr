@@ -30,7 +30,7 @@ pyclipper==1.3.0.post5
 
 # Face detection - dlib precompilato
 cmake==3.27.7
-dlib-bin
+dlib==19.24.2
 
 
 matplotlib
