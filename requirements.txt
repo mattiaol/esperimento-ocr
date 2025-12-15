@@ -6,6 +6,7 @@ opencv-python-headless==4.8.1.78
 
 # Imaging
 Pillow==10.3.0
+pillow-heif==0.13.1
 
 # OCR
 easyocr==1.7.1
