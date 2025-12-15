@@ -1,8 +1,8 @@
 # Streamlit
 streamlit==1.47.0
 
-# Computer Vision - IMPORTANTE: usa 4.8.1.78 che è stabile
-opencv-python-headless==4.7.0.72
+opencv-python==4.5.3.56
+opencv-python-headless==4.5.3.56
 
 # Imaging
 Pillow==10.3.0
