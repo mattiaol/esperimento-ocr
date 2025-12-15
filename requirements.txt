@@ -1,14 +1,10 @@
 streamlit==1.47.0
 easyocr
 craft-text-detector
-torch
-torchvision
-numpy
+numpy<2.0.0
 opencv-python-headless
 Pillow
 pillow-heif
-scikit-image
-scipy
 imutils
 shapely
 networkx
