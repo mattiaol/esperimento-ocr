@@ -1,19 +1,21 @@
 streamlit==1.47.0
-numpy<2.0.0
 
-# 2. **FIX FONDAMENTALE**: Forziamo OpenCV a una versione moderna (e headless per sicurezza)
-# Una versione sopra il 4.5.4.61 (che era il limite di craft) è necessaria.
-# Usiamo l'ultima 4.x stabile per aggirare il blocco di craft.
+# FIX FONDAMENTALE: Rimuoviamo il conflitto tra opencv-python e headless.
+# Usiamo solo headless e forziamo una versione moderna nota per essere stabile.
 opencv-python-headless==4.8.0.76
 
-# 3. Le librerie che usano OpenCV (verrà usata la versione che abbiamo appena installato)
-craft-text-detector
-easyocr
+# Librerie OCR (lasciamo le versioni vecchie per evitare nuovi problemi di Torch/TF)
+craft-text-detector==0.4.2
+easyocr==1.4.1
 
-# 4. Dipendenze accessorie
+# Dipendenze pesanti (bloccate alle versioni originali ma compatibili con 3.10)
+torch==1.11.0
+torchvision==0.12.0
+numpy==1.22.3 
+scipy==1.8.0
+
+# Altre dipendenze
 Pillow
-pillow-heif
-scipy
 imutils
 shapely
 networkx
