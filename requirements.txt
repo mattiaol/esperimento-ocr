@@ -1,18 +1,18 @@
-# Blocchiamo numpy alla versione 1.x per evitare crash con OpenCV/Torch
+streamlit==1.47.0
+# Teniamo numpy < 2 per sicurezza (fondamentale)
 numpy<2.0.0
 
-# Installiamo prima la versione headless di OpenCV per il server
-opencv-python-headless
-
-# Le librerie principali
-streamlit==1.47.0
-easyocr
+# Librerie principali
+# NON mettiamo opencv qui: craft-text-detector installerà automaticamente
+# la versione standard (opencv-python). Visto che abbiamo il file packages.txt,
+# ora funzionerà anche su Cloud!
 craft-text-detector
+easyocr
 
-# Dipendenze accessorie
+# Dipendenze grafiche e di calcolo
 Pillow
 pillow-heif
+scipy
 imutils
 shapely
 networkx
-scipy
