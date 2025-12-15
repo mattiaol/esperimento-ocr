@@ -1,15 +1,16 @@
 streamlit==1.47.0
-# Teniamo numpy < 2 per sicurezza (fondamentale)
 numpy<2.0.0
 
-# Librerie principali
-# NON mettiamo opencv qui: craft-text-detector installerà automaticamente
-# la versione standard (opencv-python). Visto che abbiamo il file packages.txt,
-# ora funzionerà anche su Cloud!
+# 2. **FIX FONDAMENTALE**: Forziamo OpenCV a una versione moderna (e headless per sicurezza)
+# Una versione sopra il 4.5.4.61 (che era il limite di craft) è necessaria.
+# Usiamo l'ultima 4.x stabile per aggirare il blocco di craft.
+opencv-python-headless==4.8.0.76
+
+# 3. Le librerie che usano OpenCV (verrà usata la versione che abbiamo appena installato)
 craft-text-detector
 easyocr
 
-# Dipendenze grafiche e di calcolo
+# 4. Dipendenze accessorie
 Pillow
 pillow-heif
 scipy
