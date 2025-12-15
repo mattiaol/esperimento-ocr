@@ -1,14 +1,18 @@
+# Blocchiamo numpy alla versione 1.x per evitare crash con OpenCV/Torch
+numpy<2.0.0
+
+# Installiamo prima la versione headless di OpenCV per il server
+opencv-python-headless
+
+# Le librerie principali
 streamlit==1.47.0
 easyocr
 craft-text-detector
-torch
-torchvision
-numpy
-opencv-python-headless
+
+# Dipendenze accessorie
 Pillow
 pillow-heif
-scikit-image
-scipy
 imutils
 shapely
 networkx
+scipy
