@@ -1,21 +1,23 @@
+# Streamlit
 streamlit==1.47.0
 
-# FIX FONDAMENTALE: Rimuoviamo il conflitto tra opencv-python e headless.
-# Usiamo solo headless e forziamo una versione moderna nota per essere stabile.
-opencv-python-headless==4.8.0.76
+# Computer Vision - Versioni compatibili con prebuilt wheels
+opencv-python-headless==4.10.0.84
+Pillow>=9.0.0  # Usa versione più recente con wheel precompilato
 
-# Librerie OCR (lasciamo le versioni vecchie per evitare nuovi problemi di Torch/TF)
-craft-text-detector==0.4.2
-easyocr==1.4.1
+# OCR Libraries
+craft-text-detector==0.4.3
+easyocr==1.7.1
 
-# Dipendenze pesanti (bloccate alle versioni originali ma compatibili con 3.10)
-torch==1.11.0
-torchvision==0.12.0
-numpy<2.0.0
-scipy==1.8.0
+# Deep Learning - Versioni più recenti
+torch==2.0.1
+torchvision==0.15.2
 
-# Altre dipendenze
-Pillow
-imutils
-shapely
-networkx
+# Scientific Computing
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+
+# Utilities
+imutils==0.5.4
+shapely>=2.0.0
+networkx>=3.0
