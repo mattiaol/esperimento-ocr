@@ -14,5 +14,6 @@ libx11-dev
 libatlas-base-dev
 liblapack-dev
 libblas-dev
+libopenblas-dev
 tesseract-ocr-eng
 tesseract-ocr-ita
