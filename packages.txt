@@ -14,3 +14,5 @@ libx11-dev
 libatlas-base-dev
 liblapack-dev
 libblas-dev
+tesseract-ocr-eng
+tesseract-ocr-ita
