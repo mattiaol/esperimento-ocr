@@ -7,3 +7,10 @@ libgomp1
 libgeos-dev
 libheif-dev
 libheif1
+cmake
+build-essential
+libboost-all-dev
+libx11-dev
+libatlas-base-dev
+liblapack-dev
+libblas-dev
