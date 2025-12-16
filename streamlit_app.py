@@ -11,7 +11,7 @@ pillow_heif.register_heif_opener()
 
 # Importiamo i moduli della repository originale
 try:
-    from detect_face import FaceDetectionFactory
+    from detect_face import FaceFactory
     from extract_words import ExtractWords
 except ImportError as e:
     st.error(f"Errore di importazione: {e}. Assicurati di aver caricato TUTTI i file della repo originale.")
