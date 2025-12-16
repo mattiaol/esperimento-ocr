@@ -89,7 +89,7 @@ if uploaded_file is not None:
                     img_cv = cv2.imread(temp_path)
                     
                     # --- FASE 2: Rilevamento Volto ---
-                    factory_instance = face_factory("Dlib") 
+                    factory_instance = face_factory
                     detector = factory_instance.get_face_detector()
                     
                     if processed_img is None:
