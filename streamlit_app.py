@@ -9,12 +9,17 @@ import pillow_heif  # Nuova libreria per HEIC
 # Registra il supporto HEIC per Pillow
 pillow_heif.register_heif_opener()
 
-# Importiamo i moduli della repository originale
 try:
-    from detect_face import FaceFactory
-    from extract_words import ExtractWords
+    # CORREZIONE 1: Usa il nome corretto della funzione presente in detect_face.py
+    from detect_face import face_factory 
+    
+    # CORREZIONE 2: Importiamo le factory disponibili, dato che ExtractWords non c'è
+    from extract_words import ocr_factory, OcrFactory
+    
+    # Importiamo anche utility necessarie se dobbiamo ricostruire la logica
+    from utlis import createHeatMapAndBoxCoordinates
 except ImportError as e:
-    st.error(f"Errore di importazione: {e}. Assicurati di aver caricato TUTTI i file della repo originale.")
+    st.error(f"Errore di importazione: {e}. Controlla i nomi nei file detect_face.py e extract_words.py")
     st.stop()
 
 st.set_page_config(page_title="TC ID Card OCR Pro", page_icon="🆔", layout="wide")
