@@ -89,8 +89,8 @@ if uploaded_file is not None:
                     img_cv = cv2.imread(temp_path)
                     
                     # --- FASE 2: Rilevamento Volto ---
-                    face_detector = FaceDetectionFactory(face_method)
-                    processed_img = face_detector.detect_face(img_cv)
+                    factory_instance = face_factory("Dlib") 
+                    detector = factory_instance.get_face_detector()
                     
                     if processed_img is None:
                         st.warning("⚠️ Nessun volto rilevato per l'allineamento. Uso l'immagine originale.")
