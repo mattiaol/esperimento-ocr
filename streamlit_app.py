@@ -74,7 +74,7 @@ if uploaded_file is not None:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.image(pil_image, caption="Immagine Caricata", use_column_width=True)
+            st.image(pil_image, caption="Immagine Caricata", use_container_width=True)
 
         if st.button("🚀 Avvia Analisi OCR", type="primary"):
             with st.spinner("Elaborazione in corso..."):
