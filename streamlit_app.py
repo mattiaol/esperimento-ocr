@@ -13,6 +13,10 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
 
+
+# Reduce noisy TensorFlow logs (only affects keras_ocr/tensorflow imports)
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import pillow_heif
 
 # Enable HEIC/HEIF support in Pillow
@@ -41,8 +45,8 @@ except Exception:
     _FACE_FACTORY_AVAILABLE = False
 
 try:
-    # utlis.py exposes: correctPerspective(image)
-    from utlis import correctPerspective  # type: ignore
+    # utlis.py (repo) contains perspective + rotation helpers used by the pipeline
+    import utlis  # type: ignore
     _UTILS_AVAILABLE = True
 except Exception:
     _UTILS_AVAILABLE = False
@@ -286,20 +290,150 @@ def annotate(img_bgr: np.ndarray, items: List[OcrItem], highlights: Dict[str, Tu
 
 
 # ----------------------------
-# Repo "PIPELINE" mode (optional)
 # ----------------------------
-def pipeline_extract(img_bgr: np.ndarray, img_name: str, ocr_method: str, neighbor_dist: int) -> Tuple[Dict[str, str], np.ndarray]:
-    """
-    Attempts to run a pipeline compatible with the provided repo structure:
-    - CRAFT (text heatmap)
-    - UNet mask (if importable)
-    - NearestBox refinement
-    - OCR via extract_words.ocr_factory()
+# Repo "PIPELINE" mode (ported from main.py)
+# ----------------------------
+ORI_THRESH = 3  # Orientation angle threshold for skew correction
 
-    This will run only if optional dependencies and model files are present.
-    """
-    # Imports are inside to keep SIMPLE mode fast and robust.
+
+def getCenterRatios(img: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """Return (cx/img_w, cy/img_h) for each center."""
+    if img.ndim == 2:
+        img_h, img_w = img.shape
+    else:
+        img_h, img_w = img.shape[:2]
+
+    ratios = np.zeros_like(centers, dtype=np.float32)
+    for i, (cx, cy) in enumerate(centers):
+        ratios[i] = (float(cx) / float(img_w), float(cy) / float(img_h))
+    return ratios
+
+
+def matchCenters(ratios1: np.ndarray, ratios2: np.ndarray) -> Tuple[int, int, int, int]:
+    """Map 4 mask-centers (ratios1) to the closest CRAFT box-centers (ratios2)."""
+    if ratios1.shape[0] != 4:
+        raise ValueError(f"Attesi 4 centri dalla maschera, trovati {ratios1.shape[0]}")
+    if ratios2.shape[0] == 0:
+        raise ValueError("Nessun box rilevato da CRAFT.")
+
+    diffs = []
+    for k in range(4):
+        d = np.abs(ratios2 - ratios1[k])  # (N,2)
+        diffs.append(np.sum(d, axis=1))   # (N,)
+
+    idxs = [int(np.argmin(d)) for d in diffs]
+    return idxs[0], idxs[1], idxs[2], idxs[3]
+
+
+def getCenterOfMasks(mask: np.ndarray) -> np.ndarray:
+    """Find centers of 4 largest mask components, sorted top-to-bottom."""
+    m = mask.copy()
+    if m.ndim != 2:
+        raise ValueError("Maschera UNet non valida (attesa 2D).")
+
+    if m.max() <= 1:
+        m = (m * 255).astype(np.uint8)
+    else:
+        m = m.astype(np.uint8)
+
+    contours, _ = cv2.findContours(m, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise ValueError("Nessun contorno trovato nella maschera UNet.")
+
+    # keep 4 largest (by area), then sort by y (top-to-bottom)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:4]
+    bounding = [cv2.boundingRect(c) for c in contours]
+    contours = [c for c, _bb in sorted(zip(contours, bounding), key=lambda p: p[1][1])]
+
+    centers: List[Tuple[int, int]] = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        centers.append((int(round(x + w / 2.0)), int(round(y + h / 2.0))))
+    return np.array(centers, dtype=np.int32)
+
+
+def getBoxRegions(regions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert CRAFT polygons to (x,w,y,h) boxes + centers."""
+    boxes: List[Tuple[int, int, int, int]] = []
+    centers: List[Tuple[int, int]] = []
+    for box_region in regions:
+        pts = np.array(box_region).reshape(-1).astype(int)
+        if pts.size != 8:
+            # Some CRAFT outputs can be shaped differently; enforce 4 points.
+            pts = np.array(box_region).reshape(4, 2).astype(int).reshape(-1)
+        x1, y1, x2, y2, x3, y3, x4, y4 = pts.tolist()
+
+        x = min(x1, x3)
+        y = min(y1, y2)
+        w = abs(min(x1, x3) - max(x2, x4))
+        h = abs(min(y1, y2) - max(y3, y4))
+
+        cX = int(round(x + w / 2.0))
+        cY = int(round(y + h / 2.0))
+        centers.append((cX, cY))
+        boxes.append((int(x), int(w), int(y), int(h)))
+
+    return np.array(boxes, dtype=np.int32), np.array(centers, dtype=np.int32)
+
+
+@st.cache_resource(show_spinner=False)
+def _get_craft(cuda: bool):
     from craft_text_detector import Craft  # type: ignore
+    return Craft(output_dir="outputs", crop_type="poly", cuda=cuda)
+
+
+@st.cache_resource(show_spinner=False)
+def _get_unet_res34(device: str):
+    """Load UNet (ResNet34 backbone) once and reuse."""
+    from unet_predict import Res34BackBone  # type: ignore
+    backbone = Res34BackBone()
+    model = backbone.load_model(device)
+    return backbone, model
+
+
+@st.cache_resource(show_spinner=False)
+def _get_face_detector(method: str):
+    if not _FACE_FACTORY_AVAILABLE:
+        return None
+    return face_factory(method).get_face_detector()
+
+
+def _create_heatmap_and_regions(img_bgr: np.ndarray, cuda: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """CRAFT text score heatmap + box polygons."""
+    craft = _get_craft(cuda=cuda)
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pred = craft.detect_text(img_rgb)
+    heatmap = pred["heatmaps"]["text_score_heatmap"]
+    regions = pred["boxes"]
+    return heatmap, regions
+
+
+def _to_3ch_float(img: np.ndarray) -> np.ndarray:
+    """Ensure HxWx3 float32."""
+    if img.ndim == 2:
+        out = np.stack([img, img, img], axis=-1)
+    elif img.ndim == 3 and img.shape[2] == 1:
+        out = np.repeat(img, 3, axis=2)
+    elif img.ndim == 3 and img.shape[2] == 3:
+        out = img
+    else:
+        raise ValueError(f"Formato heatmap non supportato: shape={img.shape}")
+    return out.astype(np.float32)
+
+
+def pipeline_extract(img_bgr: np.ndarray, img_name: str, ocr_method: str, neighbor_dist: int) -> Tuple[Dict[str, str], np.ndarray]:
+    """Pipeline completa (come main.py): CRAFT -> UNet -> matchCenters -> NearestBox -> OCR."""
+    if not _UTILS_AVAILABLE:
+        raise RuntimeError("utlis.py non importabile: impossibile usare la modalità PIPELINE.")
+
+    # Lazily import heavy deps only in PIPELINE
+    try:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        cuda_for_craft = torch.cuda.is_available()
+    except Exception:
+        device = "cpu"
+        cuda_for_craft = False
 
     try:
         from find_nearest_box import NearestBox  # type: ignore
@@ -307,101 +441,67 @@ def pipeline_extract(img_bgr: np.ndarray, img_name: str, ocr_method: str, neighb
         raise RuntimeError(f"Impossibile importare find_nearest_box.py: {e}")
 
     try:
-        # NOTE: unet_predict.py may require optional deps (segmentation_models_pytorch).
-        from unet_predict import UnetModel  # type: ignore
-        _unet_available = True
-    except Exception:
-        _unet_available = False
-
-    try:
-        from extract_words import ocr_factory  # type: ignore
-        _ocr_factory_available = True
+        from extract_words import OcrFactory  # type: ignore
     except Exception as e:
-        _ocr_factory_available = False
         raise RuntimeError(f"Impossibile importare extract_words.py: {e}")
 
-    if not _unet_available:
+    # UNet weights + segmentation_models_pytorch must be available
+    try:
+        backbone, unet_model = _get_unet_res34(device=device)
+    except Exception as e:
         raise RuntimeError(
-            "unet_predict.py non importabile (manca una dipendenza o un modello). "
-            "Verifica che 'segmentation_models_pytorch' sia installato oppure usa la modalità SIMPLE."
+            "Impossibile caricare il modello UNet (ResNet34). " 
+            "Controlla che 'segmentation-models-pytorch' sia installato e che i file in 'model/resnet34/' esistano. " 
+            f"Dettaglio: {e}"
         )
 
-    # 1) CRAFT heatmap + boxes (run on CPU for compatibility)
-    craft = Craft(output_dir="outputs", crop_type="poly", cuda=False)
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    prediction = craft.detect_text(img_rgb)
-    heatmap = prediction["heatmaps"]["text_score_heatmap"]
-    boxes = prediction["boxes"]
+    # 1) CRAFT heatmap + text boxes
+    heatmap, regions = _create_heatmap_and_regions(img_bgr, cuda=cuda_for_craft)
+    heatmap_3ch = _to_3ch_float(heatmap)
 
-    # 2) UNet mask from heatmap
-    heatmap_3 = np.stack([heatmap, heatmap, heatmap], axis=-1).astype(np.float32)
-    try:
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        device = "cpu"
+    # 2) UNet predicted mask
+    predicted_mask = backbone.predict(unet_model, heatmap_3ch, device)
+    predicted_mask_u8 = predicted_mask.astype(np.uint8)
 
-    unet = UnetModel(device=device)
-    mask = unet.predict(heatmap_3)
+    # 3) Orientation correction using mask lines (main.py logic)
+    orientation_angle = utlis.findOrientationofLines(predicted_mask_u8.copy())
+    if orientation_angle is not None and abs(float(orientation_angle)) > ORI_THRESH:
+        img_bgr = utlis.rotateImage(float(orientation_angle), img_bgr)
+        heatmap, regions = _create_heatmap_and_regions(img_bgr, cuda=cuda_for_craft)
+        heatmap_3ch = _to_3ch_float(heatmap)
+        predicted_mask = backbone.predict(unet_model, heatmap_3ch, device)
+        predicted_mask_u8 = predicted_mask.astype(np.uint8)
 
-    # 3) Extract 4 line-like regions from mask (largest components)
-    mask_u8 = (mask.astype(np.uint8) * 255) if mask.max() <= 1 else mask.astype(np.uint8)
-    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 4) Convert boxes + find centers
+    if regions is None or len(regions) == 0:
+        raise RuntimeError("CRAFT non ha rilevato box di testo.")
+    bbox_coordinates, box_centers = getBoxRegions(np.array(regions))
+    mask_centers = getCenterOfMasks(predicted_mask_u8)
 
-    rects = []
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        area = w * h
-        if area > 200:  # small filter
-            rects.append((x, y, w, h, area))
+    # 5) Match mask centers -> nearest craft centers (ratio-based)
+    centers_ratio_mask = getCenterRatios(predicted_mask_u8, mask_centers)
+    centers_ratio_all = getCenterRatios(img_bgr, box_centers)
+    matched_box_indexes = matchCenters(centers_ratio_mask, centers_ratio_all)
 
-    if len(rects) < 4:
-        raise RuntimeError("Maschere UNet insufficienti (<4 regioni). Usa la modalità SIMPLE o controlla il modello.")
+    # 6) Expand to nearest neighbor boxes (main.py)
+    nearestBox = NearestBox(distance_thresh=float(neighbor_dist), draw_line=False)
+    new_bboxes = nearestBox.searchNearestBoundingBoxes(bbox_coordinates, matched_box_indexes, img_bgr)
 
-    # Keep 4 largest by area, sorted by y
-    rects = sorted(rects, key=lambda r: r[4], reverse=True)[:4]
-    rects = sorted(rects, key=lambda r: r[1])
+    # 7) OCR on the 4 final regions
+    Image2Text = OcrFactory.select_ocr_method(ocr_method=ocr_method, border_thresh=3, denoise=False)
+    person_info = Image2Text.ocrOutput(img_name, img_bgr, new_bboxes)
 
-    # 4) Convert CRAFT polygons to (x,w,y,h)
-    box_coords = []
-    for b in boxes:
-        pts = np.array(b).astype(int)
-        x1 = int(pts[:, 0].min())
-        y1 = int(pts[:, 1].min())
-        x2 = int(pts[:, 0].max())
-        y2 = int(pts[:, 1].max())
-        box_coords.append([x1, x2 - x1, y1, y2 - y1])
-    box_coords = np.array(box_coords, dtype=np.int32)
-
-    # 5) Pick one representative box index per region (closest center)
-    box_centers = np.column_stack([box_coords[:, 0] + box_coords[:, 1] / 2.0, box_coords[:, 2] + box_coords[:, 3] / 2.0])
-    region_centers = np.array([[x + w / 2.0, y + h / 2.0] for x, y, w, h, _a in rects], dtype=np.float32)
-
-    chosen_indexes = []
-    for rc in region_centers:
-        d = np.linalg.norm(box_centers - rc[None, :], axis=1)
-        chosen_indexes.append(int(np.argmin(d)))
-    box_indexes = tuple(chosen_indexes[:4])
-
-    # 6) Refine boxes with NearestBox (optional extension)
-    nearest = NearestBox(distance_thresh=neighbor_dist, draw_line=False)
-    refined_boxes = nearest.searchNearestBoundingBoxes(box_coords, box_indexes, img_bgr)
-
-    # 7) OCR using the repo factory
-    ocr = ocr_factory(ocr_method=ocr_method, border_thresh=3, denoise=False)
-    text_output = ocr.ocrOutput(img_name, img_bgr, refined_boxes)
-
-    # 8) Draw refined boxes
+    # 8) Annotate output
     out = img_bgr.copy()
     labels = ["Tc", "Surname", "Name", "DateofBirth"]
-    for lab, (x, w, y, h) in zip(labels, refined_boxes):
-        cv2.rectangle(out, (int(x), int(y)), (int(x + w), int(y + h)), (0, 0, 255), 2)
-        cv2.putText(out, lab, (int(x), max(0, int(y) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    for lab, (x, w, y, h) in zip(labels, new_bboxes):
+        x, w, y, h = int(x), int(w), int(y), int(h)
+        cv2.rectangle(out, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        cv2.putText(out, lab, (x, max(0, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-    return text_output, out
+    return person_info, out
 
 
-# ----------------------------
 # Face alignment / perspective (optional)
 # ----------------------------
 def align_by_face(img_bgr: np.ndarray, method: str, rot_interval: int) -> Tuple[np.ndarray, str]:
@@ -409,7 +509,9 @@ def align_by_face(img_bgr: np.ndarray, method: str, rot_interval: int) -> Tuple[
         return img_bgr, "Rilevamento volto non disponibile (detect_face.py non importabile)."
 
     try:
-        detector = face_factory(method).get_face_detector()
+        detector = _get_face_detector(method)
+        if detector is None:
+            return img_bgr, "Rilevamento volto non disponibile (detect_face.py non importabile)."
         aligned = detector.changeOrientationUntilFaceFound(img_bgr, rot_interval)
         if aligned is None:
             return img_bgr, "Nessun volto rilevato: uso l'immagine originale."
@@ -422,7 +524,7 @@ def apply_perspective(img_bgr: np.ndarray) -> Tuple[np.ndarray, str]:
     if not _UTILS_AVAILABLE:
         return img_bgr, "Correzione prospettiva non disponibile (utlis.py non importabile)."
     try:
-        return correctPerspective(img_bgr), "Correzione prospettiva completata."
+        return utlis.correctPerspective(img_bgr), "Correzione prospettiva completata."
     except Exception as e:
         return img_bgr, f"Correzione prospettiva non riuscita: {e}. Uso l'immagine originale."
 
