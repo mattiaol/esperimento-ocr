@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -118,6 +117,68 @@ class OcrItem:
 def _get_easyocr_reader():
     import easyocr  # local import
     return easyocr.Reader(["tr", "en"], gpu=False)
+
+
+@st.cache_resource(show_spinner=False)
+def _get_paddleocr_reader():
+    """Init PaddleOCR once per process (SIMPLE mode only)."""
+    try:
+        from paddleocr import PaddleOCR  # type: ignore
+    except Exception as e:
+        raise ImportError(
+            "PaddleOCR non importabile. Verifica di aver installato 'paddlepaddle' e 'paddleocr'. "
+            f"Dettaglio: {e}"
+        ) from e
+
+    # show_log=False per ridurre rumore nei log di Streamlit Cloud
+    return PaddleOCR(use_angle_cls=True, lang="tr", show_log=False)
+
+
+def run_paddleocr(img_rgb: np.ndarray) -> List[OcrItem]:
+    """Run PaddleOCR on an RGB image (numpy array)."""
+    ocr = _get_paddleocr_reader()
+
+    # PaddleOCR accetta numpy array; per sicurezza passiamo in BGR
+    img_bgr = img_rgb[:, :, ::-1].copy()
+
+    result = ocr.ocr(img_bgr, cls=True)
+
+    # Result shape can be either:
+    # - [ [ [box, (text, score)], ... ] ]  (batch with 1 image)
+    # - [ [box, (text, score)], ... ]      (single image)
+    lines_out = result
+    if isinstance(result, list) and len(result) == 1 and isinstance(result[0], list):
+        lines_out = result[0]
+
+    items: List[OcrItem] = []
+    for line in (lines_out or []):
+        try:
+            box = line[0]
+            text_score = line[1]
+            txt = str(text_score[0])
+            conf = float(text_score[1])
+
+            pts = np.array(box).astype(int)
+            x1 = int(pts[:, 0].min())
+            y1 = int(pts[:, 1].min())
+            x2 = int(pts[:, 0].max())
+            y2 = int(pts[:, 1].max())
+        except Exception:
+            # Se PaddleOCR cambia formato output, ignora la riga invece di rompere tutto
+            continue
+
+        items.append(
+            OcrItem(
+                text=txt,
+                text_norm=normalize_text(txt),
+                conf=conf,
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+            )
+        )
+    return items
 
 
 def run_easyocr(img_rgb: np.ndarray) -> List[OcrItem]:
@@ -354,28 +415,51 @@ def getCenterOfMasks(mask: np.ndarray) -> np.ndarray:
     return np.array(centers, dtype=np.int32)
 
 
-def getBoxRegions(regions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Convert CRAFT polygons to (x,w,y,h) boxes + centers."""
+def getBoxRegions(regions) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert CRAFT polygons to (x,w,y,h) boxes + centers.
+
+    Supports both 4-point rectangles and variable-length polygons (CRAFT crop_type="poly").
+    """
     boxes: List[Tuple[int, int, int, int]] = []
     centers: List[Tuple[int, int]] = []
-    for box_region in regions:
-        pts = np.array(box_region).reshape(-1).astype(int)
-        if pts.size != 8:
-            # Some CRAFT outputs can be shaped differently; enforce 4 points.
-            pts = np.array(box_region).reshape(4, 2).astype(int).reshape(-1)
-        x1, y1, x2, y2, x3, y3, x4, y4 = pts.tolist()
 
-        x = min(x1, x3)
-        y = min(y1, y2)
-        w = abs(min(x1, x3) - max(x2, x4))
-        h = abs(min(y1, y2) - max(y3, y4))
+    for region in regions:
+        # region can be: (4,2), (N,2), (1,N,2), or a flat list [x1,y1,x2,y2,...]
+        pts = np.asarray(region)
 
-        cX = int(round(x + w / 2.0))
-        cY = int(round(y + h / 2.0))
+        if pts.ndim == 3 and pts.shape[0] == 1:
+            pts = pts[0]
+
+        if pts.ndim == 1:
+            if pts.size % 2 != 0 or pts.size < 4:
+                continue
+            pts = pts.reshape(-1, 2)
+
+        if pts.ndim != 2 or pts.shape[1] != 2:
+            continue
+
+        xs = pts[:, 0].astype(np.float32)
+        ys = pts[:, 1].astype(np.float32)
+
+        x1 = int(np.floor(xs.min()))
+        y1 = int(np.floor(ys.min()))
+        x2 = int(np.ceil(xs.max()))
+        y2 = int(np.ceil(ys.max()))
+
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+
+        cX = int(round(x1 + w / 2.0))
+        cY = int(round(y1 + h / 2.0))
+
         centers.append((cX, cY))
-        boxes.append((int(x), int(w), int(y), int(h)))
+        boxes.append((x1, w, y1, h))
+
+    if not boxes:
+        return np.zeros((0, 4), dtype=np.int32), np.zeros((0, 2), dtype=np.int32)
 
     return np.array(boxes, dtype=np.int32), np.array(centers, dtype=np.int32)
+
 
 
 @st.cache_resource(show_spinner=False)
@@ -527,7 +611,7 @@ def pipeline_extract(img_bgr: np.ndarray, img_name: str, ocr_method: str, neighb
     # 4) Convert boxes + find centers
     if regions is None or len(regions) == 0:
         raise RuntimeError("CRAFT non ha rilevato box di testo.")
-    bbox_coordinates, box_centers = getBoxRegions(np.array(regions))
+    bbox_coordinates, box_centers = getBoxRegions(regions)
     mask_centers = getCenterOfMasks(predicted_mask_u8)
 
     # 5) Match mask centers -> nearest craft centers (ratio-based)
@@ -592,7 +676,9 @@ with st.sidebar.expander("Opzioni avanzate", expanded=True):
     face_method = st.selectbox("Metodo volto (rotazione)", ["ssd", "haar", "dlib"], index=0)
     rot_interval = st.slider("Passo rotazione (gradi)", 5, 30, 15)
     do_perspective = st.checkbox("Correzione prospettiva ID (se disponibile)", value=False)
-    ocr_method = st.selectbox("Metodo OCR", ["TesseractOcr", "EasyOcr"], index=0)
+    # In PIPELINE supportiamo solo i metodi presenti in extract_words.py
+    ocr_options = ["TesseractOcr", "EasyOcr"] if mode.startswith("PIPELINE") else ["TesseractOcr", "EasyOcr", "PaddleOCR"]
+    ocr_method = st.selectbox("Metodo OCR", ocr_options, index=0)
     neighbor_dist = st.slider("Distanza NearestBox (solo PIPELINE)", 10, 100, 60)
     show_all_boxes = st.checkbox("Mostra tutti i box OCR (solo SIMPLE)", value=True)
 
@@ -648,6 +734,12 @@ if uploaded_file is not None:
                         except Exception as e:
                             st.warning(f"EasyOCR non disponibile ({e}). Passo a Tesseract.")
                             items = run_tesseract(img_rgb)
+                    elif ocr_method == "PaddleOCR":
+                        try:
+                            items = run_paddleocr(img_rgb)
+                        except Exception as e:
+                            st.warning(f"PaddleOCR non disponibile ({e}). Passo a Tesseract.")
+                            items = run_tesseract(img_rgb)
                     else:
                         items = run_tesseract(img_rgb)
 
@@ -672,3 +764,4 @@ if uploaded_file is not None:
 
             except Exception as e:
                 st.error(f"Errore durante l'elaborazione: {e}")
+
