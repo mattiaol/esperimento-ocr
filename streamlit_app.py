@@ -7,91 +7,12 @@ import tempfile
 import unicodedata
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
-
-# -----------------------------------------------------------------------------
-# Torchvision compatibility patch
-# -----------------------------------------------------------------------------
-# Some third-party OCR/segmentation packages (and older code) still do:
-#   from torchvision.models.vgg import model_urls
-# but TorchVision removed `model_urls` in v0.15. We recreate it so those
-# imports don't crash, using the official Weights URLs when available.
-def _patch_torchvision_legacy_model_urls() -> None:
-    try:
-        import torchvision.models.vgg as _tv_vgg  # type: ignore
-        if not hasattr(_tv_vgg, "model_urls"):
-            try:
-                from torchvision.models import (  # type: ignore
-                    VGG11_Weights,
-                    VGG13_Weights,
-                    VGG16_Weights,
-                    VGG19_Weights,
-                    VGG11_BN_Weights,
-                    VGG13_BN_Weights,
-                    VGG16_BN_Weights,
-                    VGG19_BN_Weights,
-                )
-                _tv_vgg.model_urls = {
-                    "vgg11": VGG11_Weights.IMAGENET1K_V1.url,
-                    "vgg13": VGG13_Weights.IMAGENET1K_V1.url,
-                    "vgg16": VGG16_Weights.IMAGENET1K_V1.url,
-                    "vgg19": VGG19_Weights.IMAGENET1K_V1.url,
-                    "vgg11_bn": VGG11_BN_Weights.IMAGENET1K_V1.url,
-                    "vgg13_bn": VGG13_BN_Weights.IMAGENET1K_V1.url,
-                    "vgg16_bn": VGG16_BN_Weights.IMAGENET1K_V1.url,
-                    "vgg19_bn": VGG19_BN_Weights.IMAGENET1K_V1.url,
-                }
-            except Exception:
-                # Hard-coded fallbacks (official PyTorch model URLs)
-                _tv_vgg.model_urls = {
-                    "vgg11": "https://download.pytorch.org/models/vgg11-8a719046.pth",
-                    "vgg13": "https://download.pytorch.org/models/vgg13-19584684.pth",
-                    "vgg16": "https://download.pytorch.org/models/vgg16-397923af.pth",
-                    "vgg19": "https://download.pytorch.org/models/vgg19-dcbb9e9d.pth",
-                    "vgg11_bn": "https://download.pytorch.org/models/vgg11_bn-6002323d.pth",
-                    "vgg13_bn": "https://download.pytorch.org/models/vgg13_bn-abd245e5.pth",
-                    "vgg16_bn": "https://download.pytorch.org/models/vgg16_bn-6c64b313.pth",
-                    "vgg19_bn": "https://download.pytorch.org/models/vgg19_bn-c79401a0.pth",
-                }
-    except Exception:
-        pass
-
-    # (Optional) same idea for ResNet if any dependency expects it
-    try:
-        import torchvision.models.resnet as _tv_resnet  # type: ignore
-        if not hasattr(_tv_resnet, "model_urls"):
-            try:
-                from torchvision.models import (  # type: ignore
-                    ResNet18_Weights,
-                    ResNet34_Weights,
-                    ResNet50_Weights,
-                    ResNet101_Weights,
-                    ResNet152_Weights,
-                )
-                _tv_resnet.model_urls = {
-                    "resnet18": ResNet18_Weights.IMAGENET1K_V1.url,
-                    "resnet34": ResNet34_Weights.IMAGENET1K_V1.url,
-                    "resnet50": ResNet50_Weights.IMAGENET1K_V1.url,
-                    "resnet101": ResNet101_Weights.IMAGENET1K_V1.url,
-                    "resnet152": ResNet152_Weights.IMAGENET1K_V1.url,
-                }
-            except Exception:
-                _tv_resnet.model_urls = {
-                    "resnet18": "https://download.pytorch.org/models/resnet18-f37072fd.pth",
-                    "resnet34": "https://download.pytorch.org/models/resnet34-b627a593.pth",
-                    "resnet50": "https://download.pytorch.org/models/resnet50-0676ba61.pth",
-                    "resnet101": "https://download.pytorch.org/models/resnet101-63fe2227.pth",
-                    "resnet152": "https://download.pytorch.org/models/resnet152-394f9c45.pth",
-                }
-    except Exception:
-        pass
-
-
-_patch_torchvision_legacy_model_urls()
 
 
 # Reduce noisy TensorFlow logs (only affects keras_ocr/tensorflow imports)
@@ -464,12 +385,62 @@ def _get_craft(cuda: bool):
 
 @st.cache_resource(show_spinner=False)
 def _get_unet_res34(device: str):
-    """Load UNet (ResNet34 backbone) once and reuse."""
-    from unet_predict import Res34BackBone  # type: ignore
-    backbone = Res34BackBone()
+    """Load UNet (ResNet34 backbone) once and reuse.
+
+    Repo variants:
+    - unet_predict.py at project root
+    - pytorch_unet/unet_predict.py (as in the reference main.py)
+    This loader supports both, plus a final fallback to a direct file-path import.
+    """
+    Res34BackBone = None  # type: ignore
+
+    # 1) Preferred: package path used by the reference repo
+    try:
+        from pytorch_unet.unet_predict import Res34BackBone as _Res34BackBone  # type: ignore
+        Res34BackBone = _Res34BackBone
+    except Exception:
+        pass
+
+    # 2) Fallback: root-level module
+    if Res34BackBone is None:
+        try:
+            from unet_predict import Res34BackBone as _Res34BackBone  # type: ignore
+            Res34BackBone = _Res34BackBone
+        except Exception:
+            pass
+
+    # 3) Final fallback: load by file path (works even if pytorch_unet isn't a package)
+    if Res34BackBone is None:
+        import importlib.util
+
+        base = Path(__file__).resolve().parent
+        candidates = [
+            base / "unet_predict.py",
+            base / "pytorch_unet" / "unet_predict.py",
+        ]
+
+        last_err = None
+        for cand in candidates:
+            if cand.exists():
+                try:
+                    spec = importlib.util.spec_from_file_location("_unet_predict_dyn", cand)
+                    if spec and spec.loader:
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                        Res34BackBone = getattr(mod, "Res34BackBone")
+                        break
+                except Exception as e:
+                    last_err = e
+
+        if Res34BackBone is None:
+            raise ModuleNotFoundError(
+                "Impossibile importare Res34BackBone da 'unet_predict' o 'pytorch_unet/unet_predict.py'. "
+                "Assicurati che il file esista nel progetto."
+            ) from last_err
+
+    backbone = Res34BackBone()  # type: ignore[operator]
     model = backbone.load_model(device)
     return backbone, model
-
 
 @st.cache_resource(show_spinner=False)
 def _get_face_detector(method: str):
