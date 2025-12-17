@@ -37,3 +37,7 @@ matplotlib
 pytesseract
 craft-text-detector
 keras-ocr
+
+paddlepaddle==3.2.2
+paddlex==3.3.12
+paddleocr==3.3.2
