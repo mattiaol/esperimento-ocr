@@ -7,8 +7,17 @@ import tempfile
 import unicodedata
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+# OpenCV is optional on Streamlit Community Cloud (cv2 import may fail depending on wheel/build).
+# We import it lazily and allow the app to fall back to SIMPLE mode.
+try:
+    import cv2  # type: ignore
+    _CV2_AVAILABLE = True
+    _CV2_IMPORT_ERROR = ""
+except Exception as _e:  # pragma: no cover
+    cv2 = None  # type: ignore
+    _CV2_AVAILABLE = False
+    _CV2_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
-import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
@@ -26,7 +35,7 @@ pillow_heif.register_heif_opener()
 # ----------------------------
 # Streamlit setup
 # ----------------------------
-st.set_page_config(page_title="TC ID Card OCR", page_icon="🆔", layout="wide")
+st.set_page_config(page_title="TC ID Card OCR", page_icon="ID", layout="wide")
 st.title("TC ID Card OCR Scanner")
 st.markdown("Carica un'immagine (JPG/PNG/HEIC) e avvia l'estrazione dei dati.")
 
@@ -69,9 +78,24 @@ def load_image(uploaded_file) -> Optional[Image.Image]:
 
 
 def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
-    """Convert PIL RGB image to OpenCV BGR."""
-    rgb = np.array(pil_img)
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    """Convert a PIL image to a BGR numpy array without requiring OpenCV."""
+    rgb = np.array(pil_img.convert("RGB"))
+    # RGB -> BGR
+    return rgb[:, :, ::-1].copy()
+
+
+def bgr_to_rgb(img_bgr: np.ndarray) -> np.ndarray:
+    """Convert a BGR numpy array to RGB (no OpenCV required)."""
+    return img_bgr[:, :, ::-1]
+
+
+def _require_cv2(feature: str = "questa funzionalità") -> None:
+    """Raise a friendly error if OpenCV isn't available."""
+    if not _CV2_AVAILABLE or cv2 is None:
+        raise ImportError(
+            f"OpenCV (cv2) non disponibile: {_CV2_IMPORT_ERROR}. "
+            f"Impossibile usare {feature}. Usa la modalità SIMPLE oppure correggi le dipendenze."
+        )
 
 
 def normalize_text(s: str) -> str:
@@ -278,6 +302,7 @@ def extract_fields_simple(items: List[OcrItem], img_shape_hw: Tuple[int, int]) -
 
 
 def annotate(img_bgr: np.ndarray, items: List[OcrItem], highlights: Dict[str, Tuple[int, int, int, int]], draw_all: bool) -> np.ndarray:
+    _require_cv2('l\'annotazione delle box')
     out = img_bgr.copy()
     if draw_all:
         for it in items:
@@ -327,6 +352,7 @@ def matchCenters(ratios1: np.ndarray, ratios2: np.ndarray) -> Tuple[int, int, in
 
 def getCenterOfMasks(mask: np.ndarray) -> np.ndarray:
     """Find centers of 4 largest mask components, sorted top-to-bottom."""
+    _require_cv2('il calcolo dei contorni della maschera (UNet)')
     m = mask.copy()
     if m.ndim != 2:
         raise ValueError("Maschera UNet non valida (attesa 2D).")
@@ -401,7 +427,7 @@ def _get_face_detector(method: str):
 def _create_heatmap_and_regions(img_bgr: np.ndarray, cuda: bool) -> Tuple[np.ndarray, np.ndarray]:
     """CRAFT text score heatmap + box polygons."""
     craft = _get_craft(cuda=cuda)
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    img_rgb = bgr_to_rgb(img_bgr)
     pred = craft.detect_text(img_rgb)
     heatmap = pred["heatmaps"]["text_score_heatmap"]
     regions = pred["boxes"]
@@ -534,7 +560,16 @@ def apply_perspective(img_bgr: np.ndarray) -> Tuple[np.ndarray, str]:
 # ----------------------------
 st.sidebar.header("Impostazioni")
 
-mode = st.sidebar.radio("Modalità", ["SIMPLE (consigliata)", "PIPELINE (sperimentale)"], index=0)
+modes = ["SIMPLE (consigliata)", "PIPELINE (sperimentale)"]
+if not _CV2_AVAILABLE:
+    # Without OpenCV we can't run the full pipeline (face/perspective/contours/visual debug).
+    modes = ["SIMPLE (consigliata)"]
+    st.sidebar.warning(
+        "OpenCV (cv2) non è disponibile nell'ambiente di deploy. "
+        "La modalità PIPELINE è disabilitata: usa SIMPLE oppure correggi le dipendenze."
+    )
+
+mode = st.sidebar.radio("Modalità", modes, index=0)
 
 with st.sidebar.expander("Opzioni avanzate", expanded=True):
     face_method = st.selectbox("Metodo volto (rotazione)", ["ssd", "haar", "dlib"], index=0)
@@ -587,7 +622,7 @@ if uploaded_file is not None:
                         neighbor_dist=int(neighbor_dist),
                     )
                 else:
-                    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                    img_rgb = bgr_to_rgb(img_bgr)
 
                     # SIMPLE: pick OCR backend
                     if ocr_method == "EasyOcr":
@@ -604,7 +639,7 @@ if uploaded_file is not None:
 
                 # 3) Show result
                 with col2:
-                    st.image(cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB), caption="Risultato / Debug", use_container_width=True)
+                    st.image(bgr_to_rgb(vis_bgr), caption="Risultato / Debug", use_container_width=True)
 
                 st.divider()
                 st.subheader("Dati estratti")
