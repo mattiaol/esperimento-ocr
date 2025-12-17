@@ -9,6 +9,8 @@ pillow-heif==0.13.1
 
 # OCR
 easyocr==1.7.1
+segmentation-models-pytorch
+timm
 
 # Deep Learning - Versioni compatibili
 torch==2.0.1
