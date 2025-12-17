@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -353,51 +354,28 @@ def getCenterOfMasks(mask: np.ndarray) -> np.ndarray:
     return np.array(centers, dtype=np.int32)
 
 
-def getBoxRegions(regions) -> Tuple[np.ndarray, np.ndarray]:
-    """Convert CRAFT polygons to (x,w,y,h) boxes + centers.
-
-    Supports both 4-point rectangles and variable-length polygons (CRAFT crop_type="poly").
-    """
+def getBoxRegions(regions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert CRAFT polygons to (x,w,y,h) boxes + centers."""
     boxes: List[Tuple[int, int, int, int]] = []
     centers: List[Tuple[int, int]] = []
+    for box_region in regions:
+        pts = np.array(box_region).reshape(-1).astype(int)
+        if pts.size != 8:
+            # Some CRAFT outputs can be shaped differently; enforce 4 points.
+            pts = np.array(box_region).reshape(4, 2).astype(int).reshape(-1)
+        x1, y1, x2, y2, x3, y3, x4, y4 = pts.tolist()
 
-    for region in regions:
-        # region can be: (4,2), (N,2), (1,N,2), or a flat list [x1,y1,x2,y2,...]
-        pts = np.asarray(region)
+        x = min(x1, x3)
+        y = min(y1, y2)
+        w = abs(min(x1, x3) - max(x2, x4))
+        h = abs(min(y1, y2) - max(y3, y4))
 
-        if pts.ndim == 3 and pts.shape[0] == 1:
-            pts = pts[0]
-
-        if pts.ndim == 1:
-            if pts.size % 2 != 0 or pts.size < 4:
-                continue
-            pts = pts.reshape(-1, 2)
-
-        if pts.ndim != 2 or pts.shape[1] != 2:
-            continue
-
-        xs = pts[:, 0].astype(np.float32)
-        ys = pts[:, 1].astype(np.float32)
-
-        x1 = int(np.floor(xs.min()))
-        y1 = int(np.floor(ys.min()))
-        x2 = int(np.ceil(xs.max()))
-        y2 = int(np.ceil(ys.max()))
-
-        w = max(1, x2 - x1)
-        h = max(1, y2 - y1)
-
-        cX = int(round(x1 + w / 2.0))
-        cY = int(round(y1 + h / 2.0))
-
+        cX = int(round(x + w / 2.0))
+        cY = int(round(y + h / 2.0))
         centers.append((cX, cY))
-        boxes.append((x1, w, y1, h))
-
-    if not boxes:
-        return np.zeros((0, 4), dtype=np.int32), np.zeros((0, 2), dtype=np.int32)
+        boxes.append((int(x), int(w), int(y), int(h)))
 
     return np.array(boxes, dtype=np.int32), np.array(centers, dtype=np.int32)
-
 
 
 @st.cache_resource(show_spinner=False)
@@ -549,7 +527,7 @@ def pipeline_extract(img_bgr: np.ndarray, img_name: str, ocr_method: str, neighb
     # 4) Convert boxes + find centers
     if regions is None or len(regions) == 0:
         raise RuntimeError("CRAFT non ha rilevato box di testo.")
-    bbox_coordinates, box_centers = getBoxRegions(regions)
+    bbox_coordinates, box_centers = getBoxRegions(np.array(regions))
     mask_centers = getCenterOfMasks(predicted_mask_u8)
 
     # 5) Match mask centers -> nearest craft centers (ratio-based)
