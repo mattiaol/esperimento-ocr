@@ -13,8 +13,8 @@ segmentation-models-pytorch==0.5.0
 timm>=1.0.0
 
 # Deep Learning - Versioni compatibili
-torch==2.0.1
-torchvision==0.15.2
+torch==1.13.1
+torchvision==0.14.1
 
 # Scientific
 numpy==1.24.4
